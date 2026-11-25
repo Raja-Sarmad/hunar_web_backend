@@ -6,18 +6,22 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
+const isVercel = Boolean(process.env.VERCEL);
+
 const uploadDir = path.resolve("uploads");
-if (!fs.existsSync(uploadDir)) {
+if (!isVercel && !fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
-    cb(null, `${Date.now()}-${safe}`);
-  },
-});
+const storage = isVercel
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, uploadDir),
+      filename: (_req, file, cb) => {
+        const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+        cb(null, `${Date.now()}-${safe}`);
+      },
+    });
 
 const upload = multer({
   storage,
@@ -30,22 +34,25 @@ const upload = multer({
   },
 });
 
-router.post(
-  "/",
-  requireAuth,
-  requireRole("provider", "admin"),
-  (req, res) => {
-    upload.single("image")(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || "Upload failed." });
-      }
-      if (!req.file) {
-        return res.status(400).json({ message: "No image file uploaded." });
-      }
-      const imageUrl = `/uploads/${req.file.filename}`;
-      res.status(201).json({ imageUrl, message: "Image uploaded." });
-    });
-  },
-);
+router.post("/", requireAuth, requireRole("provider", "admin"), (req, res) => {
+  upload.single("image")(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ message: err.message || "Upload failed." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ message: "No image file uploaded." });
+    }
+
+    // On Vercel, filesystem is ephemeral — store as data URL in MongoDB
+    if (isVercel || req.file.buffer) {
+      const b64 = req.file.buffer.toString("base64");
+      const imageUrl = `data:${req.file.mimetype};base64,${b64}`;
+      return res.status(201).json({ imageUrl, message: "Image uploaded." });
+    }
+
+    const imageUrl = `/uploads/${req.file.filename}`;
+    res.status(201).json({ imageUrl, message: "Image uploaded." });
+  });
+});
 
 export default router;
